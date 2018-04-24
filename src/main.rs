@@ -29,7 +29,11 @@ use syntect::parsing::SyntaxSet;
 use terminal::as_terminal_escaped;
 
 struct Options {
+    /// Use true color (24 bit) instead of 8 bit ANSI colors
     true_color: bool,
+
+    /// If this is enabled, bat shows staged changes (like `git diff --staged`)
+    staged_changes: bool,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -118,7 +122,7 @@ fn print_file<P: AsRef<Path>>(
     Ok(())
 }
 
-fn get_git_diff(filename: String) -> Option<LineChanges> {
+fn get_git_diff(options: &Options, filename: String) -> Option<LineChanges> {
     let repo = Repository::open_from_env().ok()?;
     let workdir = repo.workdir()?;
     let current_dir = env::current_dir().ok()?;
@@ -129,8 +133,12 @@ fn get_git_diff(filename: String) -> Option<LineChanges> {
     diff_options.pathspec(pathspec);
     diff_options.context_lines(0);
 
-    let diff = repo.diff_index_to_workdir(None, Some(&mut diff_options))
-        .ok()?;
+    let diff = if options.staged_changes {
+        let head = repo.head().and_then(|r| r.peel_to_tree()).ok()?;
+        repo.diff_tree_to_index(Some(&head), None, Some(&mut diff_options))
+    } else {
+        repo.diff_index_to_workdir(None, Some(&mut diff_options))
+    }.ok()?;
 
     let mut line_changes: LineChanges = HashMap::new();
 
@@ -191,6 +199,7 @@ fn run(matches: &ArgMatches) -> Result<()> {
 
     let options = Options {
         true_color: colorterm == "truecolor" || colorterm == "24bit",
+        staged_changes: matches.is_present("staged"),
     };
 
     let theme_dir = home_dir.join(".config").join("bat").join("themes");
@@ -207,7 +216,7 @@ fn run(matches: &ArgMatches) -> Result<()> {
 
     if let Some(files) = matches.values_of("FILE") {
         for file in files {
-            let line_changes = get_git_diff(file.to_string());
+            let line_changes = get_git_diff(&options, file.to_string());
             print_file(&options, theme, &syntax_set, file, line_changes)?;
         }
     }
@@ -236,6 +245,12 @@ fn main() {
                 .help("File(s) to print")
                 .multiple(true)
                 .empty_values(false),
+        )
+        .arg(
+            Arg::with_name("staged")
+                .long("staged")
+                .short("s")
+                .help("Show staged changes (Git)"),
         )
         .help_message("Print this help message.")
         .version_message("Show version information.")
